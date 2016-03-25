@@ -4,135 +4,121 @@ from _Framework.ControlSurface import ControlSurface
 from _Framework.ButtonElement import ButtonElement
 from _Framework.InputControlElement import *
 
-IS_MOMENTARY = True
-
+#IS_MOMENTARY = True
 
 class MidiFighterTwister(ControlSurface):
     __module__ = __name__
     __doc__ = "MidiFighterTwister class"
 
     def __init__(self, c_instance):
-        self.note_off_color = 36
-        self.note_on_color = 60
-        self.note_follow_color = 80
-        self.sequencer_note = 36
-        self.pad_status = {}
         ControlSurface.__init__(self, c_instance)
         with self.component_guard():
             self.__c_instance = c_instance
             self.show_message('Script initiated')
-            self.pad = {}
-            self.init_buttons_page_1()
-            self.clip_position_16th = None
-            self.song().view.add_detail_clip_listener(self.trigger_listener)
-            self.song().add_current_song_time_listener(self.light_follows_beat)
+            self.init()
 
-            self.init_buttons_page_2()
+    def init(self):
+        # initialize listeners, caches and colors
+        self.mf_init_page_config()
+        self.mf_init_light_pages()
 
-    def init_buttons_page_1(self):
-        # Create encode buttons
-        for cc_value in range(0, 16):
-            self.pad[cc_value] = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 1,
-                                               cc_value)
-            self.pad[cc_value].add_value_listener(self.encoder_button_press,
-                                                  identify_sender=True)
-        # Create side buttons
-        self.padl8 = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 3, 8)
-        self.padr11 = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 3, 11)
-        self.padl8.add_value_listener(self.side_button_press,
-                                      identify_sender=True)
-        self.padr11.add_value_listener(self.side_button_press,
-                                      identify_sender=True)
-        self.reset_buttons_page_1()
+        # Start listeners to call dispatcher
+        self.song().view.add_detail_clip_listener(
+            self.dispatch_detail_clip_listener)
+        self.song().add_current_song_time_listener(
+            self.dispatch_current_song_time_listener)
+        # Initialize the on/off cache for encoders for sequencer
 
-    def reset_buttons_page_1(self):
-        for cc_value in range(0, 16):
-            self._send_midi((177, cc_value, self.note_off_color))
-            self.pad_status[cc_value] = False
+    def mf_init_page_config(self):
+        # Initialize configuration parameters
+        # Sequencer configuration
+        self.sequencer_page_default_color = 1
+        self.sequencer_current_page_color = self.sequencer_page_default_color
+        self.sequencer_base_default_note = 36
+        self.sequencer_current_selected_note = self.sequencer_base_default_note
 
-    def encoder_button_press(self, value, sender):
-        actual_clip = self.song().view.highlighted_clip_slot.clip
-        if actual_clip and actual_clip.is_midi_clip:
-            cc_value = sender._msg_identifier
-            if value > 0:
-                self.log_message(str(sender._msg_identifier))
-                self.show_message(str(sender))
-                actual_clip = self.song().view.highlighted_clip_slot.clip
-                if not self.pad_status[cc_value]:
-                    self._send_midi((177, sender._msg_identifier, self.note_on_color))
-                    actual_clip.set_notes(((self.sequencer_note, cc_value*0.25, 0.25, 127, False),))
-                    self.pad_status[cc_value] = True
-                else:
-                    self._send_midi((177, sender._msg_identifier, self.note_off_color))
-                    actual_clip.remove_notes(cc_value*0.25, self.sequencer_note, 0.25, 1)
-                    self.pad_status[cc_value] = False
+        # Midi Channels
+        self.rotary_midi_channel = 175 + 1
+        self.ring_midi_channel = 175 + 1
+        self.switch_midi_channel = 175 + 2
+        self.light_midi_channel = 175 + 2
+        # Pages cc map
+        self.clip_page_cc = range(0, 16)
+        self.sequencer_page_cc = range(16, 32)
+        self.note_page_cc = range(32, 48)
+        self.control_page_cc = range(48, 64)
+        # Pages init color
+        self.clip_page_colors = [1] * 16
+        self.sequencer_page_colors = [self.sequencer_page_default_color] * 16
+        self.note_page_colors = range(0, 127, 16) * 2
+        self.control_page_colors = [1] * 16
+        # Status cache for sequencer
+        self.switch_encoder_status_cache = [False] * 64
+        # Status cache for rotaries
+        self.rotary_encoder_status_cache = [0] * 64
 
-    def side_button_press(self, value, sender):
-        cc_value = sender._msg_identifier
-        if value > 0:
-            if cc_value == 8 and self.sequencer_note != 0:
-                self.sequencer_note = self.sequencer_note - 1
-                self.note_off_color = self.note_off_color - 5
-                self.update_sequencer()
-            if cc_value == 11 and self.sequencer_note != 127:
-                self.sequencer_note = self.sequencer_note + 1
-                self.note_off_color = self.note_off_color + 9
-                self.update_sequencer()
+    def mf_init_light_pages(self):
+        sequencer_page_map = zip(self.sequencer_page_cc,
+                                 self.sequencer_page_colors)
+        for light_encoder_cc, light_color_cc in sequencer_page_map:
+            self._mf_set_light(light_encoder_cc, light_color_cc, False)
+        note_page_map = zip(self.note_page_cc,
+                            self.note_page_colors)
+        for light_encoder_cc, light_color_cc in note_page_map:
+            self._mf_set_light(light_encoder_cc, light_color_cc, False)
 
-    def light_follows_beat(self):
-        actual_clip = self.song().view.highlighted_clip_slot.clip
-        if actual_clip and actual_clip.is_midi_clip:
-            if self.clip_position_16th == None:
-                self.clip_position_16th = int(actual_clip.playing_position/0.25)
-                if self.pad_status[self.clip_position_16th]:
-                    self._send_midi((177, self.clip_position_16th, self.note_on_color))
-                else:
-                    self._send_midi((177, self.clip_position_16th, self.note_off_color))
-            elif self.clip_position_16th != int(actual_clip.playing_position/0.25):
-                if self.pad_status[self.clip_position_16th]:
-                    self._send_midi((177, self.clip_position_16th, self.note_on_color))
-                else:
-                    self._send_midi((177, self.clip_position_16th, self.note_off_color))
-                self.clip_position_16th = int(actual_clip.playing_position/0.25)
-                self._send_midi((177, self.clip_position_16th, self.note_follow_color))
+    def _mf_set_light(self, light_encoder_cc, light_color_cc, status):
+        # Sets color on midi channel 2 (177) end updates status cache
+        # for sequencer to remember statuses
+        self._send_midi((self.light_midi_channel, light_encoder_cc,
+                         light_color_cc))
+        self.switch_encoder_status_cache[light_encoder_cc]
 
-    def trigger_listener(self):
-        self.show_message('Listener triggered')
-        self.update_sequencer()
+    def dispatch_detail_clip_listener(self):
+        current_clip = self.song().view.highlighted_clip_slot.clip
+        if current_clip.is_midi_clip:
+            # Update leds when notes are added or removed
+            current_clip.add_notes_listener(
+                self._sequencer_update_notes_to_light)
+            self.sequencer()
+        else:
+            self.sequencer_reset_colors()
 
-    def update_sequencer(self):
-        self.reset_buttons_page_1()
-        actual_clip = self.song().view.highlighted_clip_slot.clip
-        if actual_clip and actual_clip.is_midi_clip:
-            notes = actual_clip.get_notes(0, self.sequencer_note, 4, 1)
-            self.reset_buttons_page_1()
-            for note in notes:
-                cc_value = int(note[1]*4)
-                self._send_midi((177, cc_value, self.note_on_color))
-                self.pad_status[cc_value] = True
+    def dispatch_current_song_time_listener(self):
+        pass
 
-##########################################
+# Sequencer
+    def sequencer(self):
+        self._sequencer_update_notes_to_light()
 
-    def init_buttons_page_2(self):
-        # Create encode buttons
-        for cc_value in range(16, 32):
-            self.pad[cc_value] = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 1,
-                                               cc_value)
-            self.pad[cc_value].add_value_listener(self.encoder_button_press,
-                                                  identify_sender=True)
-        # Create side buttons
-        self.padl14 = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 3, 14)
-        self.padr17 = ButtonElement(IS_MOMENTARY, MIDI_CC_TYPE, 3, 17)
-        self.padl14.add_value_listener(self.side_button_press,
-                                      identify_sender=True)
-        self.padr17.add_value_listener(self.side_button_press,
-                                      identify_sender=True)
-        self.reset_buttons_page_2()
+    @property
+    def sequencer_current_light_on_color(self):
+        # light on color to be relative to page color
+        return self.sequencer_current_page_color + 32
 
-    def reset_buttons_page_2(self):
-        cc_values = range(16, 32)
-        note_colors = range(0, 127, 8)
+    @property
+    def sequencer_current_light_beat_color(self):
+        # light on color to be relative to page color
+        return self.sequencer_current_page_color + 64
 
-        for cc_value, note_color in zip(cc_values, note_colors):
-            self._send_midi((177, cc_value, note_color))
-            #self.pad_status[cc_value] = False
+    def _sequencer_get_midi_notes(self, note):
+        current_clip = self.song().view.highlighted_clip_slot.clip
+        # actual_clip.get_notes(start, self.sequencer_current_selected_note,
+        # selection_length, hight)
+        return current_clip.get_notes(0, note, 4, 1)
+
+    def _sequencer_update_notes_to_light(self):
+        self.sequencer_reset_colors()
+        notes_for_current_selected_note = self._sequencer_get_midi_notes(
+            self.sequencer_current_selected_note)
+        for note in notes_for_current_selected_note:
+            light_encoder_cc = int(note[1]*4+self.sequencer_page_cc[0])
+            self._mf_set_light(light_encoder_cc,
+                               self.sequencer_current_light_on_color, True)
+
+    def sequencer_reset_colors(self):
+        for light_encoder_cc in self.sequencer_page_cc:
+            self.log_message(str(light_encoder_cc))
+            self.log_message(str(self.sequencer_current_page_color))
+            self._mf_set_light(light_encoder_cc,
+                               self.sequencer_page_default_color, False)
